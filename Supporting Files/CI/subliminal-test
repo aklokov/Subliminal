@@ -31,7 +31,7 @@ subliminal-test (-project <project_path> | -workspace <workspace_path>)
 		( -sim_device <device_type> | -hw_id <udid> )
 		(-login_password <password> | --live)
 		[-build_tool <tool_name>] [-scheme <scheme_name>] [-sdk <sdk>] [-replacement_bundle_id <id>] [--quiet_build]
-		[-timeout <timeout>] [-output <output_dir>] 
+		[-sim_version <version>] [-timeout <timeout>] [-output <output_dir>] 
 		[-e <variable> <value>]
 
 \`subliminal-test\` builds a scheme contained in an Xcode project or Xcode workspace,
@@ -90,10 +90,11 @@ Optional build arguments:
 					Defaults to \"Release\".
 
 	-sdk <sdk>			The SDK to use to build the specified project or workspace.
-					This should be an iPhone Simulator SDK if \`-sim_device\` is specified, 
-					or an iOS device SDK if \`-hw_id\` is specified. Defaults to \"iphonesimulator\" 
-					(the latest iPhone Simulator SDK) if \`-sim_device\` is specified, 
-					or \"iphoneos\" (the latest iOS device SDK) if \`-hw_id\` is specified.
+					This should be an iOS Simulator SDK if \`-sim_device\` is specified, 
+					or an iOS device SDK if \`-hw_id\` is specified. Defaults to 
+					\"iphonesimulator\" (the latest iOS Simulator SDK installed) 
+					if \`-sim_device\` is specified, or \"iphoneos\" (the latest 
+					iOS device SDK) if \`-hw_id\` is specified.
 
 	-replacement_bundle_id <id>	The identifier to use to overwrite the product's bundle identifier.
 					When testing in-app purchase, this must be the identifier of your main app.
@@ -109,13 +110,21 @@ Optional build arguments:
 					log output entirely, by using \`xctool\` as a build tool.
 
 Optional testing arguments:
+	-sim_version <version>		The version of the iOS Simulator SDK to test with, 
+					e.g. 5.1 or 6.1. Defaults to the latest iOS Simulator SDK 
+					installed. Ignored if \`-sim_device\` is not specified.
+
+					Note that the iOS Simulator does not accept certain combinations 
+					of device type and SDK, i.e. \"iPhone (Retina 4-inch)\" 
+					and \"6.1\".
+
 	-timeout <timeout>		The maximum duration for which to run the tests before aborting.
 					Specified in milliseconds and as a number rather than a string. Defaults to infinite.
 
 	-output <output_dir>		The directory to which to save Instruments' output, to aid in debugging test failures:
-					  * the run log, as an XML plist;
+					  * the run log, as an XML `.plist`;
 					  * screenshots taken when warnings or errors are logged;
-					  * and the run's .trace file, which can be opened in the Instruments GUI to view the run log and the screenshots.
+					  * and the run's `.trace` file, which can be opened in the Instruments GUI to view the run log and the screenshots.
 					Has no default value.
 
 	-e <variable> <value>		An environment variable setting. You may specify more than one.
@@ -149,7 +158,7 @@ case $1 in
 		shift 1;;
 
 	# Set argument, wait for value
-    -project|-workspace|-sim_device|-hw_id|-login_password|-build_tool|-scheme|-configuration|-sdk|-replacement_bundle_id|-timeout|-output|-e)
+    -project|-workspace|-sim_device|-hw_id|-login_password|-build_tool|-scheme|-configuration|-sdk|-replacement_bundle_id|-sim_version|-timeout|-output|-e)
 		if [[ -n "$CURRENT_ARG" ]]; then
 			echo "Missing value for argument: $CURRENT_ARG"
 			print_usage_and_fail
@@ -206,8 +215,12 @@ cleanup_and_exit () {
 	[[ -n "$BUILD_DIR" ]] && rm -rf "$BUILD_DIR"
 	[[ -n "$BUILD_LOG" ]] && rm -rf "$BUILD_LOG"
 	[[ -n "$RUN_DIR" ]] && rm -rf "$RUN_DIR"
+	kill AUTHORIZE_INSTRUMENTS_PID 2> /dev/null
+	killall "Instruments" 2> /dev/null
 	exit $1
 }
+trap "cleanup_and_exit 1" SIGINT SIGTERM
+
 
 ### Build app
 QUIETLY=`[[ -e "$BUILD_LOG" ]] && echo " (quietly)" || echo ""`
@@ -231,7 +244,7 @@ if [[ -n "$SIM_DEVICE" ]]; then
 			;;
 		*)
 			echo "\nERROR: Unrecognized device type."
-			exit 1
+			cleanup_and_exit 1
 			;;
 	esac
 	TARGETED_DEVICE_FAMILY_ARG="TARGETED_DEVICE_FAMILY=$DEVICE_FAMILY"
@@ -284,6 +297,7 @@ if [[ -n "$REPLACEMENT_BUNDLE_ID" ]]; then
 	defaults write "$INFO_PLIST" CFBundleIdentifier "$REPLACEMENT_BUNDLE_ID"
 fi
 
+
 ### Prepare to install app
 echo "\n\nPreparing to install app..."
 
@@ -309,17 +323,21 @@ if [[ -n "$SIM_DEVICE" ]]; then
 		echo "\n\nERROR: Could not set the simulator's device type."
 		cleanup_and_exit 1
 	fi
+
+	# The trace template we generate below specifies the simulator's version
 fi
 
 # Set paths to save Instruments' output (at least temporarily)
 RUN_DIR=`mktemp -d /tmp/subliminal-test.run.XXXXXX`
 if [ $? -ne 0 ]; then
-	echo "\n\nERROR: Could not create temporary test results directory."
+	echo "\n\nERROR: Could not create temporary test run directory."
 	cleanup_and_exit 1
 fi
 TRACE_FILE="$RUN_DIR/Integration Tests.trace"
-RESULTS_DIR="$RUN_DIR/Automation Results"
+# This directory must not have spaces in its path or else the Instruments app will crash
+RESULTS_DIR="$RUN_DIR/Results"
 mkdir "$RESULTS_DIR"
+
 
 ### Launch tests
 echo "\n\nLaunching tests...\n"
@@ -330,27 +348,68 @@ if [[ -z $LIVE ]] || ! $LIVE; then
 	# First attempt to authorize instruments when it is launched: 
 	# in the background, monitor for, and dismiss, the dialog it shows
 	osascript "$SCRIPT_DIR/authorize_instruments.scpt" "$LOGIN_PASSWORD" &
-	# Kill the process when the parent script ends
-	trap "kill $!" SIGINT SIGTERM EXIT
+	# Track pid to be killed when the parent script ends
+	AUTHORIZE_INSTRUMENTS_PID=$!
 fi
- 
-# Second attempt (in case the dialog does not show, as in certain CI environments 
-# like Travis): enter the login password on the command line, 
-# by piping the password, followed by a newline, to instruments
-# (If the user did not supply a login password, this will just print a newline)
 
-# Note that the Subliminal trace template includes the UIASCRIPT
-# and the environment variables passed to this script
-# are passed to instruments and the app by being exported at the top of this script
-TIMEOUT_ARG=`[[ -n "$TIMEOUT" ]] && echo "-l $TIMEOUT" || echo ""`
-HARDWARE_ARG=`[[ -n "$HW_ID" ]] && echo "-w $HW_ID" || echo ""`
-printf "$LOGIN_PASSWORD\n" | xcrun instruments\
-	-t "${HOME}/Library/Application Support/Instruments/Templates/Subliminal/Subliminal.tracetemplate"\
-	-D "$TRACE_FILE"\
-	$TIMEOUT_ARG\
-	$HARDWARE_ARG\
-	"$APP"\
-	-e UIARESULTSPATH "$RESULTS_DIR"
+TEMPLATE_DIR="${HOME}/Library/Application Support/Instruments/Templates/Subliminal"
+if [[ -n "$SIM_DEVICE" ]]; then
+	# We run Simulator tests in the Instruments app, using a dynamically-generated, 
+	# configuration-specific template, because the instruments command-line tool 
+	# always runs using the latest SDK
+	# http://stackoverflow.com/questions/12836129/launch-a-specific-hardware-version-of-ios-simulator-using-instruments-command-li
+
+	# Collect the necessary substitution variables
+	APP_DIR=`dirname "$APP"`
+	EXEC_NAME=`build_base_command -showBuildSettings | grep EXECUTABLE_NAME | awk 'BEGIN {FS=" = ";} {print $2}'`
+	EXEC="$APP/$EXEC_NAME"
+
+	# Identify the source template and copy to temporary directory
+	DEVICE_FAMILY_NAME=`[ $DEVICE_FAMILY -eq 1 ] && echo "iPhone" || echo "iPad"`
+	SOURCE_TEMPLATE="$TEMPLATE_DIR/CI/Subliminal-$DEVICE_FAMILY_NAME-$SIM_VERSION"
+	if [ ! -e "$SOURCE_TEMPLATE" ]; then
+		echo "\n\nERROR: Unsupported simulator SDK."
+		cleanup_and_exit 1
+	fi
+	TEMPLATE="$RUN_DIR/Subliminal.tracetemplate"
+	cp "$SOURCE_TEMPLATE" "$TEMPLATE"
+
+	# Prepare the template
+	perl -pi -e "s|~|$HOME|" "$TEMPLATE"
+	perl -pi -e "s|{{APP_DIR}}|$APP_DIR|" "$TEMPLATE"
+	perl -pi -e "s|{{EXEC}}|$EXEC|" "$TEMPLATE"
+	perl -pi -e "s|{{RESULTS_DIR}}|file://localhost$RESULTS_DIR|" "$TEMPLATE"
+	plutil -convert binary1 "$TEMPLATE"
+
+	# Note that to leave a timeout un-specified we must pass two arguments to `run_template`, not three
+	TIMEOUT_ARG=`[[ -n "$TIMEOUT" ]] && echo " $((TIMEOUT/1000))" || echo ""`
+	TESTS_COMPLETED=`osascript "$SCRIPT_DIR/run_template.scpt" "$TEMPLATE" "$TRACE_FILE"$TIMEOUT_ARG`
+	if [ "$TESTS_COMPLETED" != "true" ]; then
+		echo "\nERROR: Tests timed out."
+		# Don't exit--we still want to archive the results
+		# We'll report that the tests did not finish, and thus fail, below
+	fi
+else
+	# If the user specified that the tests should run on a device,
+	# we use the instruments command-line tool to avoid having to configure a template
+
+	# When using this tool in certain CI environments,  the authorization dialog 
+	# does not show, so we also attempt to enter the login password on the command line, 
+	# by piping the password, followed by a newline, to the tool
+	# If the user did not supply a login password, this will just print a newline)
+	TIMEOUT_ARG=`[[ -n "$TIMEOUT" ]] && echo "-l $TIMEOUT" || echo ""`
+	HARDWARE_ARG=`[[ -n "$HW_ID" ]] && echo "-w $HW_ID" || echo ""`
+	printf "$LOGIN_PASSWORD\n" | xcrun instruments\
+		-t "$TEMPLATE_DIR/Subliminal.tracetemplate"\
+		-D "$TRACE_FILE"\
+		$TIMEOUT_ARG\
+		$HARDWARE_ARG\
+		"$APP"\
+		-e UIARESULTSPATH "$RESULTS_DIR"
+	# Note that the Subliminal trace template includes the UIASCRIPT
+	# and the environment variables passed to this script
+	# are passed to instruments and the app by being exported at the top of this script
+fi
 
 if [[ -n "$SIM_DEVICE" ]]; then
 	# Reset the simulator again if the bundle identifier was replaced
@@ -362,10 +421,12 @@ if [[ -n "$SIM_DEVICE" ]]; then
 			echo "Successfully reset iOS Simulator."
 		else
 			echo "\nERROR: Could not reset the simulator."
-			# Don't fail at this point, since the tests ran
+			# Don't exit--we still want to archive the results
+			# And the tests could have succeeded
 		fi
 	fi
 fi
+
 
 ### Process results
 echo "\n\nProcessing results..."
@@ -375,12 +436,12 @@ RESULT_LOG="$RESULTS_DIR/Run 1/Automation Results.plist"
 TEST_STATUS=0
 grep -q "This was a focused run." "$RESULT_LOG"
 if [ $? -eq 0 ]; then
-	echo "\n\nERROR: Tests were committed with focus--fewer test cases may have run than normal."
+	echo "\nERROR: Tests were committed with focus--fewer test cases may have run than normal."
 	TEST_STATUS=1
 else
 	OVERALL_RESULT=`grep "Testing finished" "$RESULT_LOG"`
 	if [[ -z "$OVERALL_RESULT" ]]; then
-		echo "\n\nERROR: Tests did not finish."
+		echo "\nERROR: Tests did not finish."
 		TEST_STATUS=1
 	else
 		NUMBER_OF_FAILURES=`echo "$OVERALL_RESULT" | sed -E 's|.+with ([0-9]+) failure.+|\1|'`
