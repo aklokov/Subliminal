@@ -289,7 +289,8 @@ if [[ -n "$SIM_DEVICE" ]]; then
 	SCRIPT_DIR=$(cd "$(dirname "$0")"; pwd)
 
 	echo "\nResetting simulator content and settings..."
-	if [ `osascript "$SCRIPT_DIR/reset_simulator.scpt"` ]; then
+	RESET_SIMULATOR=`osascript "$SCRIPT_DIR/reset_simulator.scpt"`
+	if [ "$RESET_SIMULATOR" == "true" ]; then
 		echo "Successfully reset iOS Simulator."
 	else
 		echo "\n\nERROR: Could not reset the simulator."
@@ -353,7 +354,8 @@ if [[ -n "$SIM_DEVICE" ]]; then
 	# due to the risk of collision
 	if [[ -n "$REPLACEMENT_BUNDLE_ID" ]]; then
 		echo "\nResetting simulator content and settings again because bundle identifier was replaced..."
-		if [ `osascript "$SCRIPT_DIR/reset_simulator.scpt"` ]; then
+		RESET_SIMULATOR=`osascript "$SCRIPT_DIR/reset_simulator.scpt"`
+		if [ "$RESET_SIMULATOR" == "true" ]; then
 			echo "Successfully reset iOS Simulator."
 		else
 			echo "\nERROR: Could not reset the simulator."
