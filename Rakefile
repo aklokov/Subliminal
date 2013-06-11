@@ -366,7 +366,10 @@ namespace :test do
         tests_succeeded = false
       end
     }
-    test_on_sdk.call("5.1")
+    # Travis does not yet have the iOS 5.1 Simulator SDK installed
+    # https://github.com/travis-ci/travis-ci/issues/1157 tracks their change,
+    # https://github.com/inkling/Subliminal/issues/18 ours
+    test_on_sdk.call("5.1") unless ENV["TRAVIS"]
     test_on_sdk.call("6.1")
 
     if tests_succeeded
@@ -454,7 +457,10 @@ namespace :test do
           tests_succeeded = false
         end
       }
-      test_on_sdk.call("5.1")
+      # Travis does not yet have the iOS 5.1 Simulator SDK installed
+      # https://github.com/travis-ci/travis-ci/issues/1157 tracks their change,
+      # https://github.com/inkling/Subliminal/issues/18 ours
+      test_on_sdk.call("5.1") unless ENV["TRAVIS"]
       test_on_sdk.call("6.1")
 
       if tests_succeeded
@@ -481,7 +487,10 @@ namespace :test do
           tests_succeeded = false
         end
       }
-      test_on_sdk.call("5.1")
+      # Travis does not yet have the iOS 5.1 Simulator SDK installed
+      # https://github.com/travis-ci/travis-ci/issues/1157 tracks their change,
+      # https://github.com/inkling/Subliminal/issues/18 ours
+      test_on_sdk.call("5.1") unless ENV["TRAVIS"]
       test_on_sdk.call("6.1")
 
       if tests_succeeded
